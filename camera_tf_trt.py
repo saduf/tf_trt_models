@@ -15,16 +15,23 @@ import sys
 import time
 import logging
 import argparse
-
 import numpy as np
 import cv2
 import tensorflow as tf
-import tensorflow.contrib.tensorrt as trt
+# Use only when in Jetson
+#import tensorflow.contrib.tensorrt as trt
+
+import os
+import datetime
+
+# Append the object detection path to be visible by the program
+sys.path.append("./third_party/models/research/")
 
 from utils.camera import Camera
 from utils.od_utils import read_label_map, build_trt_pb, load_trt_pb, \
                            write_graph_tensorboard, detect
 from utils.visualization import BBoxVisualization
+from tf_trt_models.detection import MODELS
 
 
 # Constants
@@ -33,7 +40,6 @@ DEFAULT_LABELMAP = 'third_party/models/research/object_detection/' \
                    'data/mscoco_label_map.pbtxt'
 WINDOW_NAME = 'CameraTFTRTDemo'
 BBOX_COLOR = (0, 255, 0)  # green
-
 
 def parse_args():
     """Parse input arguments."""
@@ -93,6 +99,14 @@ def parse_args():
     parser.add_argument('--confidence', dest='conf_th',
                         help='confidence threshold [0.3]',
                         default=0.3, type=float)
+    parser.add_argument('--save', dest='do_save',
+                        help='save the processed file into path/to/model'
+                        '/filename + model_name.mp4',
+                        action='store_true')
+    parser.add_argument('--trt', dest='do_trt',
+                        help='If running model on Jetson do Tensor RT'
+                        'optimization',
+                        action='store_true')
     args = parser.parse_args()
     return args
 
@@ -113,10 +127,10 @@ def draw_help_and_fps(img, fps):
     line = cv2.LINE_AA
 
     fps_text = 'FPS: {:.1f}'.format(fps)
-    cv2.putText(img, help_text, (11, 20), font, 1.0, (32, 32, 32), 4, line)
-    cv2.putText(img, help_text, (10, 20), font, 1.0, (240, 240, 240), 1, line)
-    cv2.putText(img, fps_text, (11, 50), font, 1.0, (32, 32, 32), 4, line)
-    cv2.putText(img, fps_text, (10, 50), font, 1.0, (240, 240, 240), 1, line)
+    cv2.putText(img, help_text, (11, 20), font, 3.0, (32, 32, 32), 4, line)
+    cv2.putText(img, help_text, (10, 20), font, 3.0, (240, 240, 240), 1, line)
+    cv2.putText(img, fps_text, (11, 50), font, 3.0, (32, 32, 32), 4, line)
+    cv2.putText(img, fps_text, (10, 50), font, 3.0, (240, 240, 240), 1, line)
     return img
 
 
@@ -140,7 +154,7 @@ def show_bounding_boxes(img, box, conf, cls, cls_dict):
     return img
 
 
-def loop_and_detect(cam, tf_sess, conf_th, vis, od_type):
+def loop_and_detect(cam, tf_sess, conf_th, vis, model_name, filename, save_file, od_type):
     """Loop, grab images from camera, and do object detection.
 
     # Arguments
@@ -153,6 +167,17 @@ def loop_and_detect(cam, tf_sess, conf_th, vis, od_type):
     full_scrn = False
     fps = 0.0
     tic = time.time()
+
+    _timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
+    _filename = os.path.splitext(os.path.basename(filename))[0]
+    _video_path = './data/{}/{}'.format(MODELS[model_name].extract_dir, _filename + '_' + _timestamp + '.mp4')
+    _fourcc = cv2.VideoWriter_fourcc(*'MP4V')
+
+    img = cam.read()
+    h, w, _ = img.shape
+    if save_file:
+        out = cv2.VideoWriter(_video_path, _fourcc, 2.0, (w, h))
+
     while cam.thread_running:
         if cv2.getWindowProperty(WINDOW_NAME, 0) < 0:
             # Check to see if the user has closed the display window.
@@ -165,6 +190,9 @@ def loop_and_detect(cam, tf_sess, conf_th, vis, od_type):
             img = vis.draw_bboxes(img, box, conf, cls)
             if show_fps:
                 img = draw_help_and_fps(img, fps)
+            # Write the frame into the file '_video_name'
+            if save_file:
+                out.write(img)
             cv2.imshow(WINDOW_NAME, img)
             toc = time.time()
             curr_fps = 1.0 / (toc - tic)
@@ -181,10 +209,13 @@ def loop_and_detect(cam, tf_sess, conf_th, vis, od_type):
             full_scrn = not full_scrn
             set_full_screen(full_scrn)
 
+        #time.sleep(.3)
+
 
 def main():
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+    save_file = 0
     # Ask tensorflow logger not to propagate logs to parent (which causes
     # duplicated logging)
     logging.getLogger('tensorflow').propagate = False
@@ -196,11 +227,18 @@ def main():
     logger.info('reading label map')
     cls_dict = read_label_map(args.labelmap_file)
 
-    pb_path = './data/{}_trt.pb'.format(args.model)
+    if args.do_trt:
+        pb_path = './data/{}_trt.pb'.format(args.model)
+    else:
+        pb_path = './data/{}/{}'.format(MODELS[args.model].extract_dir, 'frozen_inference_graph.pb')
     log_path = './logs/{}_trt'.format(args.model)
+
     if args.do_build:
         logger.info('building TRT graph and saving to pb: %s' % pb_path)
-        build_trt_pb(args.model, pb_path)
+        build_trt_pb(args.model, pb_path, args.do_trt)
+
+    if args.do_save:
+        save_file = 1
 
     logger.info('opening camera device/file')
     cam = Camera(args)
@@ -231,7 +269,7 @@ def main():
     logger.info('starting to loop and detect')
     vis = BBoxVisualization(cls_dict)
     open_display_window(cam.img_width, cam.img_height)
-    loop_and_detect(cam, tf_sess, args.conf_th, vis, od_type=od_type)
+    loop_and_detect(cam, tf_sess, args.conf_th, vis, args.model, args.filename, save_file, od_type=od_type)
 
     logger.info('cleaning up')
     cam.stop()  # terminate the sub-thread in camera
