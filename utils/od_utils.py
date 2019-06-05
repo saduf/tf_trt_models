@@ -9,6 +9,7 @@ import time
 import numpy as np
 import cv2
 import tensorflow as tf
+# Use this only with Jetson
 #import tensorflow.contrib.tensorrt as trt
 
 
