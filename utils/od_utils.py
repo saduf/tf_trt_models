@@ -9,7 +9,7 @@ import time
 import numpy as np
 import cv2
 import tensorflow as tf
-import tensorflow.contrib.tensorrt as trt
+#import tensorflow.contrib.tensorrt as trt
 
 
 MEASURE_MODEL_TIME = False
@@ -33,7 +33,7 @@ def read_label_map(path_to_labels):
     return {i: cls_dict.get(i, 'CLS{}'.format(i)) for i in range(num_classes)}
 
 
-def build_trt_pb(model_name, pb_path, download_dir='data'):
+def build_trt_pb(model_name, pb_path, do_trt =0, download_dir='data'):
     """Build TRT model from the original TF model, and save the graph
     into a pb file for faster access in the future.
 
@@ -44,26 +44,29 @@ def build_trt_pb(model_name, pb_path, download_dir='data'):
     from tf_trt_models.detection import build_detection_graph
     from utils.egohands_models import get_egohands_model
 
-    if 'coco' in model_name:
-        config_path, checkpoint_path = \
-            download_detection_model(model_name, download_dir)
+    if do_trt:
+        if 'coco' in model_name:
+            config_path, checkpoint_path = \
+                download_detection_model(model_name, download_dir)
+        else:
+            config_path, checkpoint_path = \
+                get_egohands_model(model_name)
+        frozen_graph_def, input_names, output_names = build_detection_graph(
+            config=config_path,
+            checkpoint=checkpoint_path
+        )
+        trt_graph_def = trt.create_inference_graph(
+            input_graph_def=frozen_graph_def,
+            outputs=output_names,
+            max_batch_size=1,
+            max_workspace_size_bytes=1 << 26,
+            precision_mode='FP16',
+            minimum_segment_size=50
+        )
+        with open(pb_path, 'wb') as pf:
+            pf.write(trt_graph_def.SerializeToString())
     else:
-        config_path, checkpoint_path = \
-            get_egohands_model(model_name)
-    frozen_graph_def, input_names, output_names = build_detection_graph(
-        config=config_path,
-        checkpoint=checkpoint_path
-    )
-    trt_graph_def = trt.create_inference_graph(
-        input_graph_def=frozen_graph_def,
-        outputs=output_names,
-        max_batch_size=1,
-        max_workspace_size_bytes=1 << 26,
-        precision_mode='FP16',
-        minimum_segment_size=50
-    )
-    with open(pb_path, 'wb') as pf:
-        pf.write(trt_graph_def.SerializeToString())
+        download_detection_model(model_name, download_dir)
 
 
 def load_trt_pb(pb_path):
@@ -127,7 +130,7 @@ def detect(origimg, tf_sess, conf_th, od_type='ssd'):
     #tf_num = tf_sess.graph.get_tensor_by_name('num_detections:0')
 
     if od_type == 'faster_rcnn':
-        img = _preprocess(origimg, (1024, 576))
+        img = _preprocess(origimg, (600, 1024))
     elif od_type == 'ssd':
         img = _preprocess(origimg, (300, 300))
     else:
