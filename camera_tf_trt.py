@@ -18,8 +18,12 @@ import argparse
 import numpy as np
 import cv2
 import tensorflow as tf
-# Use only when in Jetson
-#import tensorflow.contrib.tensorrt as trt
+try:
+    import tensorflow.contrib.tensorrt as trt
+    do_trt = 1
+except:
+    do_trt = 0
+    print("Tensor RT not present")
 
 import os
 import datetime
@@ -102,10 +106,6 @@ def parse_args():
     parser.add_argument('--save', dest='do_save',
                         help='save the processed file into path/to/model'
                         '/filename + model_name.mp4',
-                        action='store_true')
-    parser.add_argument('--trt', dest='do_trt',
-                        help='If running model on Jetson do Tensor RT'
-                        'optimization',
                         action='store_true')
     args = parser.parse_args()
     return args
@@ -227,7 +227,7 @@ def main():
     logger.info('reading label map')
     cls_dict = read_label_map(args.labelmap_file)
 
-    if args.do_trt:
+    if do_trt:
         pb_path = './data/{}_trt.pb'.format(args.model)
     else:
         pb_path = './data/{}/{}'.format(MODELS[args.model].extract_dir, 'frozen_inference_graph.pb')
